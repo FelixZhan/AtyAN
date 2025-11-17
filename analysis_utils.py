@@ -64,9 +64,10 @@ OVERFIT_DELTA = 0.08
 
 def load_base_dataset(columns: Optional[Sequence[str]] = None) -> pd.DataFrame:
     """Read the uploaded CSV directly from disk."""
+    read_kwargs = {"low_memory": False}
     if columns:
-        return pd.read_csv(DATA_PATH, usecols=list(columns))
-    return pd.read_csv(DATA_PATH)
+        read_kwargs["usecols"] = list(columns)
+    return pd.read_csv(DATA_PATH, **read_kwargs)
 
 
 def _coerce_numeric(series: pd.Series) -> pd.Series:
@@ -75,9 +76,9 @@ def _coerce_numeric(series: pd.Series) -> pd.Series:
 
 def _coerce_boolean(series: pd.Series) -> pd.Series:
     if series is None:
-        return pd.Series(np.nan)
+        return pd.Series(pd.NA, dtype="boolean")
     as_str = series.astype(str).str.strip().str.upper()
-    out = pd.Series(np.nan, index=series.index)
+    out = pd.Series(pd.NA, index=series.index, dtype="boolean")
     out[as_str.isin(TRUTHY_STRINGS)] = True
     out[as_str.isin(FALSY_STRINGS)] = False
     numeric = pd.to_numeric(series, errors="coerce")
@@ -343,7 +344,10 @@ def prepare_univariate_prediction_dataset(
     mask_w1_onset = _coerce_boolean(df.get("w1ONSET-FULL", pd.Series(np.nan, index=df.index))).fillna(False)
     subset = df.loc[~(mask_fan | mask_pan | mask_w1_onset)].copy()
 
-    onset_pattern = re.compile(rf"^w\d+ONSET-FULL-{re.escape(onset_weight_label)}$", re.IGNORECASE)
+    onset_pattern = re.compile(
+        rf"^w([1-6])ONSET-FULL-{re.escape(onset_weight_label)}$",
+        re.IGNORECASE,
+    )
     onset_cols = [c for c in subset.columns if onset_pattern.match(c)]
     if not onset_cols:
         raise ValueError(f"No ONSET-FULL-{onset_weight_label} columns found in the dataset.")
@@ -383,14 +387,33 @@ def _safe_metric(func, *args) -> float:
         return float("nan")
 
 
+def _safe_rate(numerator: float, denominator: float) -> float:
+    return float(numerator / denominator) if denominator else float("nan")
+
+
 def _score_probabilities(y_true: Sequence[int], probas: np.ndarray) -> Dict[str, float]:
     preds = _binary_predictions(probas)
+    y_true_arr = np.asarray(y_true)
+    preds_arr = np.asarray(preds)
+    tp = float(((y_true_arr == 1) & (preds_arr == 1)).sum())
+    tn = float(((y_true_arr == 0) & (preds_arr == 0)).sum())
+    fp = float(((y_true_arr == 0) & (preds_arr == 1)).sum())
+    fn = float(((y_true_arr == 1) & (preds_arr == 0)).sum())
+    sensitivity = _safe_rate(tp, tp + fn)
+    specificity = _safe_rate(tn, tn + fp)
+    if math.isnan(sensitivity) or math.isnan(specificity):
+        g_mean = float("nan")
+    else:
+        g_mean = math.sqrt(sensitivity * specificity)
     return {
         "roc_auc": _safe_metric(roc_auc_score, y_true, probas),
         "average_precision": _safe_metric(average_precision_score, y_true, probas),
         "balanced_accuracy": _safe_metric(balanced_accuracy_score, y_true, preds),
-        "f1": _safe_metric(f1_score, y_true, preds),
+        "f_score": _safe_metric(f1_score, y_true, preds),
         "accuracy": _safe_metric(accuracy_score, y_true, preds),
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "g_mean": g_mean,
     }
 
 
