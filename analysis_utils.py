@@ -64,10 +64,7 @@ OVERFIT_DELTA = 0.08
 
 def load_base_dataset(columns: Optional[Sequence[str]] = None) -> pd.DataFrame:
     """Read the uploaded CSV directly from disk."""
-    read_kwargs = {"low_memory": False}
-    if columns:
-        read_kwargs["usecols"] = list(columns)
-    return pd.read_csv(DATA_PATH, **read_kwargs)
+    return pd.read_csv(DATA_PATH, low_memory=False)
 
 
 def _coerce_numeric(series: pd.Series) -> pd.Series:
