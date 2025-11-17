@@ -1,0 +1,15 @@
+numpy>=1.23
+pandas>=1.5
+scikit-learn>=1.3
+statsmodels>=0.14
+scipy>=1.10
+matplotlib>=3.7
+seaborn>=0.12
+imbalanced-learn>=0.11
+ibrf>=0.1.6
+torch>=2.1
+tabpfn>=0.1
+jupyterlab>=3.6
+notebook>=7.0
+tabpfn-extensions[all] @ git+https://github.com/PriorLabs/tabpfn-extensions.git
+
