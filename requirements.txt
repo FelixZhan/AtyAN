@@ -6,9 +6,9 @@ scipy>=1.10
 matplotlib>=3.7
 seaborn>=0.12
 imbalanced-learn>=0.11
-ibrf>=0.1.6
+ibrf
 torch>=2.1
-tabpfn>=0.1
+tabpfn
 jupyterlab>=3.6
 notebook>=7.0
 tabpfn-extensions[all] @ git+https://github.com/PriorLabs/tabpfn-extensions.git
