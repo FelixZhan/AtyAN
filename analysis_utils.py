@@ -5,7 +5,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,9 +35,28 @@ BASELINE_RISK_COLS: List[str] = [
     "w1intbmi",
     "w1age",
 ]
+MODEL_FEATURE_COLUMNS: List[str] = [
+    "w1tii",
+    "w1bs",
+    "w1dres",
+    "w1socf",
+    "w1dep",
+    "WSO_w1",
+    "FEAR_w1",
+    "FAT_w1",
+]
 CB_COLUMNS = ["w1ed8a", "w1ed9a", "w1ed10a", "w1ed11a"]
 TRUTHY_STRINGS = {"TRUE", "T", "YES", "Y", "1", "PRESENT"}
 FALSY_STRINGS = {"FALSE", "F", "NO", "N", "0", "ABSENT"}
+
+PERSISTENCE_ONSET_COLUMNS: Mapping[int, str] = {
+    1: "w1ONSET-FULL",
+    2: "w2ONSET-FULL-mBMI",
+    3: "w3ONSET-FULL-mBMI",
+    4: "w4ONSET-FULL-mBMI",
+    5: "w5ONSET-FULL-mBMI",
+}
+PERSISTENCE_SYMPTOM_THRESHOLD: float = 4.0
 
 
 class SimpleBalancedRandomForestClassifier(RandomForestClassifier):
@@ -113,11 +132,14 @@ def engineer_baseline_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str
     prodromal_cols = [c for c in ["BE_w1", "CB_w1", "WSO_w1", "FEAR_w1", "FAT_w1", "LEB_w1"] if c in work.columns]
     all_features = list(dict.fromkeys(risk_cols + prodromal_cols))
 
+    model_features = [col for col in MODEL_FEATURE_COLUMNS if col in work.columns]
+
     feature_sets = {
         "risk": risk_cols,
         "prodromal": prodromal_cols,
         "all_features": all_features,
         "outcomes": all_features,
+        "model_features": model_features,
     }
     return work, feature_sets
 
@@ -287,27 +309,52 @@ def run_disorder_level_anova(df: pd.DataFrame, outcomes: Sequence[str]) -> pd.Da
     return combined.sort_values(["outcome", "disorder", "level"])
 
 
-def _detect_onset_columns(df: pd.DataFrame) -> List[str]:
-    cols: List[str] = []
-    for wave in WAVES:
-        primary = f"w{wave}ONSET-FULL"
-        if primary in df.columns:
-            cols.append(primary)
-        mbmi = f"w{wave}ONSET-FULL-mBMI"
-        if mbmi in df.columns:
-            cols.append(mbmi)
-    return cols
+def _build_wave_block(
+    df: pd.DataFrame,
+    mapping: Mapping[int, str],
+    coercer: Callable[[pd.Series], pd.Series],
+) -> pd.DataFrame:
+    pairs = [(wave, column) for wave, column in mapping.items() if column in df.columns]
+    if not pairs:
+        return pd.DataFrame(index=df.index)
+    pairs.sort(key=lambda item: item[0])
+    columns = [column for _, column in pairs]
+    block = df[columns].apply(coercer)
+    block.columns = [wave for wave, _ in pairs]
+    return block
 
 
-def _persistence_label(row: pd.Series) -> float:
-    arr = row.dropna().astype(bool).to_numpy()
-    if not arr.size or not arr.any():
-        return math.nan
-    first = np.argmax(arr)
-    last = len(arr) - 1 - np.argmax(arr[::-1])
-    segment = arr[first : last + 1]
-    has_gap = (~segment).any()
-    return 1.0 if not has_gap else 0.0
+def _persistence_next_wave_labels(df: pd.DataFrame) -> pd.Series:
+    onset_block = _build_wave_block(df, PERSISTENCE_ONSET_COLUMNS, _coerce_boolean)
+    if onset_block.empty:
+        raise ValueError("No onset columns available in the dataset.")
+
+    ed14_mapping = {wave: f"w{wave}ed14" for wave in range(2, 7)}
+    ed16_mapping = {wave: f"w{wave}ed16" for wave in range(2, 7)}
+    ed14_block = _build_wave_block(df, ed14_mapping, _coerce_numeric)
+    ed16_block = _build_wave_block(df, ed16_mapping, _coerce_numeric)
+
+    if ed14_block.empty or ed16_block.empty:
+        raise ValueError("Symptom severity columns (ed14/ed16) are missing for the follow-up waves.")
+
+    labels = pd.Series(np.nan, index=df.index, dtype=float)
+
+    for wave in sorted(onset_block.columns):
+        next_wave = wave + 1
+        if next_wave not in ed14_block.columns or next_wave not in ed16_block.columns:
+            continue
+        onset_flags = onset_block[wave].fillna(False).astype(bool)
+        follow_14 = ed14_block[next_wave]
+        follow_16 = ed16_block[next_wave]
+        mask = onset_flags & follow_14.notna() & follow_16.notna() & labels.isna()
+        if not mask.any():
+            continue
+        persistent = (follow_14 > PERSISTENCE_SYMPTOM_THRESHOLD) & (
+            follow_16 > PERSISTENCE_SYMPTOM_THRESHOLD
+        )
+        labels.loc[mask] = persistent.loc[mask].astype(float)
+
+    return labels
 
 
 def prepare_persistence_dataset(
@@ -315,16 +362,15 @@ def prepare_persistence_dataset(
     feature_cols: Sequence[str],
     onset_cols: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
-    cols = list(onset_cols) if onset_cols else _detect_onset_columns(df)
-    present_cols = [c for c in cols if c in df.columns]
-    if not present_cols:
-        raise ValueError("No onset columns available in the dataset.")
-    onset_block = df[present_cols].apply(_coerce_boolean)
-    eligible = onset_block.any(axis=1)
-    complete = onset_block.notna().all(axis=1)
-    subset = df.loc[eligible & complete].copy()
-    subset["aan_persistence"] = onset_block.loc[subset.index].apply(_persistence_label, axis=1)
-    subset = subset.dropna(subset=["aan_persistence"])
+    if onset_cols:
+        raise ValueError(
+            "Custom onset column overrides are no longer supported by the persistence definition."
+        )
+    labels = _persistence_next_wave_labels(df)
+    subset = df.loc[labels.notna()].copy()
+    if subset.empty:
+        return pd.DataFrame(columns=[*feature_cols, "aan_persistence"])
+    subset["aan_persistence"] = labels.loc[subset.index]
     usable_features = [c for c in feature_cols if c in subset.columns]
     return subset[usable_features + ["aan_persistence"]]
 
@@ -450,18 +496,22 @@ def _logistic_pipeline(random_state: int = 42) -> Pipeline:
 def _balanced_rf_pipeline(random_state: int = 42) -> Pipeline:
     if ImblearnBRF is not None:
         model = ImblearnBRF(
-            n_estimators=800,
-            max_depth=6,
-            min_samples_leaf=20,
+            n_estimators=400,
+            max_depth=4,
+            min_samples_leaf=35,
+            max_features="sqrt",
+            max_samples=0.8,
             sampling_strategy="auto",
             replacement=False,
             random_state=random_state,
         )
     else:
         model = SimpleBalancedRandomForestClassifier(
-            n_estimators=800,
-            max_depth=6,
-            min_samples_leaf=20,
+            n_estimators=400,
+            max_depth=4,
+            min_samples_leaf=35,
+            max_features="sqrt",
+            max_samples=0.8,
             random_state=random_state,
         )
     return _tree_pipeline(model)
@@ -470,42 +520,28 @@ def _balanced_rf_pipeline(random_state: int = 42) -> Pipeline:
 def _ibrf_pipeline(random_state: int = 42) -> Pipeline:
     if IBRFClassifier is None:
         raise ImportError("iBRF is not installed. Run `pip install ibrf`." )
-    model = IBRFClassifier(balance_split=0.65, n_estimators=200, random_state=random_state)
-    return _tree_pipeline(model)
-
-
-def _tabpfn_rf_pipeline(random_state: int = 42) -> Pipeline:
-    try:
-        import torch
-        from tabpfn.scripts.transformer_prediction_interface import TabPFNClassifier
-        from tabpfn_extensions.random_forest import RandomForestTabPFNClassifier
-    except Exception as exc:  # pragma: no cover - optional heavy deps
-        raise ImportError(
-            "TabPFN Random Forest requires torch, tabpfn, and tabpfn-extensions."
-        ) from exc
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    clf_base = TabPFNClassifier(device=device)
-    model = RandomForestTabPFNClassifier(
-        tabpfn=clf_base,
-        n_estimators=64,
-        max_depth=3,
-    )
-    return _tree_pipeline(model)
-
-
-def _auto_tabpfn_pipeline(random_state: int = 42) -> Pipeline:
-    try:
-        from tabpfn_extensions.post_hoc_ensembles.sklearn_interface import AutoTabPFNClassifier
-    except Exception as exc:  # pragma: no cover
-        raise ImportError(
-            "AutoTabPFN requires torch and tabpfn-extensions with the post-hoc ensembles extra."
-        ) from exc
-    model = AutoTabPFNClassifier(
-        max_time=1800,
-        presets="medium_quality",
+    model = IBRFClassifier(
+        balance_split=0.65,
+        n_estimators=200,
+        max_depth=4,
+        min_samples_leaf=30,
+        max_features="sqrt",
+        max_samples=0.8,
         random_state=random_state,
     )
     return _tree_pipeline(model)
+
+
+def _tabpfn_pipeline(random_state: int = 42) -> Pipeline:
+    try:
+        from tabpfn import TabPFNClassifier
+    except Exception as exc:  # pragma: no cover - optional heavy deps
+        raise ImportError("TabPFN requires the `tabpfn` package. Run `pip install tabpfn`.") from exc
+    model = TabPFNClassifier(random_state=random_state)
+    return Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("model", model),
+    ])
 
 
 def _model_builders(random_state: int = 42) -> Dict[str, Callable[[], Pipeline]]:
@@ -513,8 +549,7 @@ def _model_builders(random_state: int = 42) -> Dict[str, Callable[[], Pipeline]]
         "balanced_random_forest": lambda: _balanced_rf_pipeline(random_state),
         "logistic_regression": lambda: _logistic_pipeline(random_state),
         "ibrf": lambda: _ibrf_pipeline(random_state),
-        "tabpfn_random_forest": lambda: _tabpfn_rf_pipeline(random_state),
-        "auto_tabpfn": lambda: _auto_tabpfn_pipeline(random_state),
+        "tabpfn": lambda: _tabpfn_pipeline(random_state),
     }
 
 
