@@ -5,12 +5,12 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.base import clone
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -20,10 +20,9 @@ from sklearn.metrics import (
     f1_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import LinearSVC
 
 DATA_PATH = Path(__file__).resolve().parent / "BP1234-ONSET.csv"
 WAVES: List[int] = [1, 2, 3, 4, 5, 6]
@@ -47,6 +46,20 @@ class SimpleBalancedRandomForestClassifier(RandomForestClassifier):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("class_weight", "balanced_subsample")
         super().__init__(*args, **kwargs)
+
+
+try:  # optional dependency
+    from imblearn.ensemble import BalancedRandomForestClassifier as ImblearnBRF
+except Exception:  # pragma: no cover - imblearn is optional
+    ImblearnBRF = None
+
+try:
+    from ibrf import iBRF as IBRFClassifier
+except Exception:  # pragma: no cover - iBRF is optional
+    IBRFClassifier = None
+
+
+OVERFIT_DELTA = 0.08
 
 
 def load_base_dataset(columns: Optional[Sequence[str]] = None) -> pd.DataFrame:
@@ -342,140 +355,296 @@ def prepare_univariate_prediction_dataset(
     return subset[usable_features + ["aan_onset_anywave"]]
 
 
+def _stratified_holdout_indices(
+    y: pd.Series,
+    repeats: int = 5,
+    test_size: float = 0.3,
+    random_state: int = 42,
+):
+    splitter = StratifiedShuffleSplit(
+        n_splits=repeats,
+        test_size=test_size,
+        random_state=random_state,
+    )
+    y_array = np.asarray(y)
+    dummy = np.zeros((len(y_array), 1))
+    for train_idx, test_idx in splitter.split(dummy, y_array):
+        yield train_idx, test_idx
+
+
 def _binary_predictions(probas: np.ndarray, threshold: float = 0.5) -> np.ndarray:
     return (probas >= threshold).astype(int)
+
+
+def _safe_metric(func, *args) -> float:
+    try:
+        return float(func(*args))
+    except ValueError:
+        return float("nan")
+
+
+def _score_probabilities(y_true: Sequence[int], probas: np.ndarray) -> Dict[str, float]:
+    preds = _binary_predictions(probas)
+    return {
+        "roc_auc": _safe_metric(roc_auc_score, y_true, probas),
+        "average_precision": _safe_metric(average_precision_score, y_true, probas),
+        "balanced_accuracy": _safe_metric(balanced_accuracy_score, y_true, preds),
+        "f1": _safe_metric(f1_score, y_true, preds),
+        "accuracy": _safe_metric(accuracy_score, y_true, preds),
+    }
+
+
+def _aggregate_metric_blocks(blocks: List[Dict[str, float]], prefix: str) -> Dict[str, float]:
+    if not blocks:
+        return {}
+    summary: Dict[str, float] = {}
+    for key in blocks[0]:
+        values = np.array([row[key] for row in blocks], dtype=float)
+        summary[f"{prefix}_{key}_mean"] = float(np.nanmean(values))
+        summary[f"{prefix}_{key}_std"] = float(np.nanstd(values))
+    return summary
+
+
+def _tree_pipeline(model) -> Pipeline:
+    return Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("model", model),
+    ])
+
+
+def _logistic_pipeline(random_state: int = 42) -> Pipeline:
+    model = LogisticRegression(
+        max_iter=4000,
+        solver="lbfgs",
+        class_weight={0: 0.35, 1: 0.65},
+        C=0.8,
+        random_state=random_state,
+    )
+    return Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+        ("model", model),
+    ])
+
+
+def _balanced_rf_pipeline(random_state: int = 42) -> Pipeline:
+    if ImblearnBRF is not None:
+        model = ImblearnBRF(
+            n_estimators=800,
+            max_depth=6,
+            min_samples_leaf=20,
+            sampling_strategy="auto",
+            replacement=False,
+            random_state=random_state,
+        )
+    else:
+        model = SimpleBalancedRandomForestClassifier(
+            n_estimators=800,
+            max_depth=6,
+            min_samples_leaf=20,
+            random_state=random_state,
+        )
+    return _tree_pipeline(model)
+
+
+def _ibrf_pipeline(random_state: int = 42) -> Pipeline:
+    if IBRFClassifier is None:
+        raise ImportError("iBRF is not installed. Run `pip install ibrf`." )
+    model = IBRFClassifier(balance_split=0.65, n_estimators=200, random_state=random_state)
+    return _tree_pipeline(model)
+
+
+def _tabpfn_rf_pipeline(random_state: int = 42) -> Pipeline:
+    try:
+        import torch
+        from tabpfn.scripts.transformer_prediction_interface import TabPFNClassifier
+        from tabpfn_extensions.random_forest import RandomForestTabPFNClassifier
+    except Exception as exc:  # pragma: no cover - optional heavy deps
+        raise ImportError(
+            "TabPFN Random Forest requires torch, tabpfn, and tabpfn-extensions."
+        ) from exc
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    clf_base = TabPFNClassifier(device=device)
+    model = RandomForestTabPFNClassifier(
+        tabpfn=clf_base,
+        n_estimators=64,
+        max_depth=3,
+    )
+    return _tree_pipeline(model)
+
+
+def _auto_tabpfn_pipeline(random_state: int = 42) -> Pipeline:
+    try:
+        from tabpfn_extensions.post_hoc_ensembles.sklearn_interface import AutoTabPFNClassifier
+    except Exception as exc:  # pragma: no cover
+        raise ImportError(
+            "AutoTabPFN requires torch and tabpfn-extensions with the post-hoc ensembles extra."
+        ) from exc
+    model = AutoTabPFNClassifier(
+        max_time=1800,
+        presets="medium_quality",
+        random_state=random_state,
+    )
+    return _tree_pipeline(model)
+
+
+def _model_builders(random_state: int = 42) -> Dict[str, Callable[[], Pipeline]]:
+    return {
+        "balanced_random_forest": lambda: _balanced_rf_pipeline(random_state),
+        "logistic_regression": lambda: _logistic_pipeline(random_state),
+        "ibrf": lambda: _ibrf_pipeline(random_state),
+        "tabpfn_random_forest": lambda: _tabpfn_rf_pipeline(random_state),
+        "auto_tabpfn": lambda: _auto_tabpfn_pipeline(random_state),
+    }
+
+
+def available_model_names() -> List[str]:
+    return list(_model_builders().keys())
+
+
+def _normalize_model_name(name: str) -> str:
+    return name.strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def run_univariate_logistic_regressions(
     df: pd.DataFrame,
     feature_cols: Sequence[str],
     target_col: str = "aan_persistence",
+    repeats: int = 5,
+    test_size: float = 0.3,
+    random_state: int = 42,
 ) -> pd.DataFrame:
     y = df[target_col].astype(int)
+    splits = list(_stratified_holdout_indices(y, repeats, test_size, random_state))
+    if not splits:
+        return pd.DataFrame()
+    base_pipeline = _logistic_pipeline(random_state)
     results = []
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     for feature in feature_cols:
         if feature not in df.columns:
             continue
         X = df[[feature]]
-        pipeline = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-                (
-                    "model",
-                    LogisticRegression(max_iter=1000, penalty="l2", solver="lbfgs", class_weight="balanced"),
-                ),
-            ]
-        )
-        probas = cross_val_predict(pipeline, X, y, cv=cv, method="predict_proba")[:, 1]
-        preds = _binary_predictions(probas)
-        metrics = {
-            "feature": feature,
-            "roc_auc": roc_auc_score(y, probas),
-            "average_precision": average_precision_score(y, probas),
-            "balanced_accuracy": balanced_accuracy_score(y, preds),
-            "f1": f1_score(y, preds),
-            "accuracy": accuracy_score(y, preds),
-        }
-        pipeline.fit(X, y)
-        metrics["coef"] = float(pipeline.named_steps["model"].coef_[0][0])
-        metrics["intercept"] = float(pipeline.named_steps["model"].intercept_[0])
-        results.append(metrics)
-    return pd.DataFrame(results).sort_values("roc_auc", ascending=False)
+        train_blocks: List[Dict[str, float]] = []
+        test_blocks: List[Dict[str, float]] = []
+        for train_idx, test_idx in splits:
+            pipeline = clone(base_pipeline)
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+            pipeline.fit(X_train, y_train)
+            train_blocks.append(_score_probabilities(y_train, pipeline.predict_proba(X_train)[:, 1]))
+            test_blocks.append(_score_probabilities(y_test, pipeline.predict_proba(X_test)[:, 1]))
+        summary = {"feature": feature}
+        summary.update(_aggregate_metric_blocks(train_blocks, "train"))
+        summary.update(_aggregate_metric_blocks(test_blocks, "test"))
+        train_auc = summary.get("train_roc_auc_mean", float("nan"))
+        test_auc = summary.get("test_roc_auc_mean", float("nan"))
+        if math.isnan(train_auc) or math.isnan(test_auc):
+            summary["overfit_flag"] = False
+        else:
+            summary["overfit_flag"] = (train_auc - test_auc) >= OVERFIT_DELTA
+        final_model = clone(base_pipeline).fit(X, y)
+        summary["coef"] = float(final_model.named_steps["model"].coef_[0][0])
+        summary["intercept"] = float(final_model.named_steps["model"].intercept_[0])
+        results.append(summary)
+    if not results:
+        return pd.DataFrame()
+    return pd.DataFrame(results).sort_values("test_roc_auc_mean", ascending=False)
 
 
-def evaluate_multivariate_models(
+def evaluate_model_zoo(
     df: pd.DataFrame,
     feature_cols: Sequence[str],
     target_col: str = "aan_persistence",
-) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
+    model_names: Optional[Sequence[str]] = None,
+    repeats: int = 5,
+    test_size: float = 0.3,
+    random_state: int = 42,
+) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[str, str]]:
     usable_features = [c for c in feature_cols if c in df.columns]
+    if not usable_features or target_col not in df.columns:
+        return pd.DataFrame(), {}, {}, {}
     X = df[usable_features]
     y = df[target_col].astype(int)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    models = {
-        "LogisticRegression": Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-                (
-                    "model",
-                    LogisticRegression(max_iter=2000, penalty="l2", solver="lbfgs", class_weight="balanced"),
-                ),
-            ]
-        ),
-        "LinearSVM": Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-                (
-                    "model",
-                    CalibratedClassifierCV(LinearSVC(class_weight="balanced", max_iter=5000), method="sigmoid", cv=3),
-                ),
-            ]
-        ),
-        "GradientBoosting": Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("model", GradientBoostingClassifier(random_state=42)),
-            ]
-        ),
-        "RandomForest": Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                (
-                    "model",
-                    RandomForestClassifier(
-                        n_estimators=500,
-                        max_depth=None,
-                        min_samples_leaf=5,
-                        class_weight="balanced_subsample",
-                        random_state=42,
-                    ),
-                ),
-            ]
-        ),
-        "BalancedRandomForest": Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                (
-                    "model",
-                    SimpleBalancedRandomForestClassifier(
-                        n_estimators=500,
-                        max_depth=None,
-                        min_samples_leaf=5,
-                        random_state=42,
-                    ),
-                ),
-            ]
-        ),
-    }
+    splits = list(_stratified_holdout_indices(y, repeats, test_size, random_state))
+    if not splits:
+        return pd.DataFrame(), {}, {}, {}
+    builders = _model_builders(random_state)
+    name_map = {_normalize_model_name(k): k for k in builders}
+    if model_names:
+        selected: List[str] = []
+        for requested in model_names:
+            key = _normalize_model_name(requested)
+            if key not in name_map:
+                raise ValueError(
+                    f"Unknown model '{requested}'. Available: {', '.join(builders.keys())}"
+                )
+            selected.append(name_map[key])
+    else:
+        selected = list(builders.keys())
+
     metrics_rows = []
     feature_tables: Dict[str, pd.DataFrame] = {}
-    for name, pipeline in models.items():
-        method = "predict_proba"
-        probas = cross_val_predict(pipeline, X, y, cv=cv, method=method)[:, 1]
-        preds = _binary_predictions(probas)
-        metrics_rows.append(
-            {
-                "model": name,
-                "roc_auc": roc_auc_score(y, probas),
-                "average_precision": average_precision_score(y, probas),
-                "balanced_accuracy": balanced_accuracy_score(y, preds),
-                "f1": f1_score(y, preds),
-                "accuracy": accuracy_score(y, preds),
-            }
-        )
-        pipeline.fit(X, y)
-        model = pipeline.named_steps["model"]
-        if hasattr(model, "feature_importances_"):
-            fi = pd.DataFrame(
-                {
-                    "feature": usable_features,
-                    "importance": model.feature_importances_,
-                }
-            ).sort_values("importance", ascending=False)
-            feature_tables[name] = fi
-    metrics_df = pd.DataFrame(metrics_rows).sort_values("roc_auc", ascending=False)
-    return metrics_df, feature_tables
+    split_tables: Dict[str, pd.DataFrame] = {}
+    errors: Dict[str, str] = {}
+
+    for name in selected:
+        try:
+            base_pipeline = builders[name]()
+        except ImportError as exc:
+            errors[name] = str(exc)
+            continue
+
+        train_blocks: List[Dict[str, float]] = []
+        test_blocks: List[Dict[str, float]] = []
+        split_records: List[Dict[str, float]] = []
+        for split_id, (train_idx, test_idx) in enumerate(splits, start=1):
+            pipeline = clone(base_pipeline)
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+            pipeline.fit(X_train, y_train)
+            train_scores = _score_probabilities(y_train, pipeline.predict_proba(X_train)[:, 1])
+            test_scores = _score_probabilities(y_test, pipeline.predict_proba(X_test)[:, 1])
+            train_blocks.append(train_scores)
+            test_blocks.append(test_scores)
+            split_records.append({"split": split_id, "stage": "train", **train_scores})
+            split_records.append({"split": split_id, "stage": "test", **test_scores})
+        summary = {"model": name}
+        summary.update(_aggregate_metric_blocks(train_blocks, "train"))
+        summary.update(_aggregate_metric_blocks(test_blocks, "test"))
+        train_auc = summary.get("train_roc_auc_mean", float("nan"))
+        test_auc = summary.get("test_roc_auc_mean", float("nan"))
+        if math.isnan(train_auc) or math.isnan(test_auc):
+            summary["overfit_flag"] = False
+        else:
+            summary["overfit_flag"] = (train_auc - test_auc) >= OVERFIT_DELTA
+        try:
+            final_pipeline = builders[name]()
+            final_pipeline.fit(X, y)
+            estimator = final_pipeline.named_steps["model"]
+            if hasattr(estimator, "feature_importances_"):
+                table = pd.DataFrame(
+                    {
+                        "feature": usable_features,
+                        "importance": estimator.feature_importances_,
+                    }
+                ).sort_values("importance", ascending=False)
+                feature_tables[name] = table
+            elif hasattr(estimator, "coef_"):
+                coefs = estimator.coef_[0]
+                table = pd.DataFrame(
+                    {
+                        "feature": usable_features,
+                        "coefficient": coefs,
+                        "abs_coefficient": np.abs(coefs),
+                    }
+                ).sort_values("abs_coefficient", ascending=False)
+                feature_tables[name] = table
+        except Exception:
+            pass
+        metrics_rows.append(summary)
+        split_tables[name] = pd.DataFrame(split_records)
+
+    if not metrics_rows:
+        return pd.DataFrame(), split_tables, feature_tables, errors
+    metrics_df = pd.DataFrame(metrics_rows).sort_values("test_roc_auc_mean", ascending=False)
+    return metrics_df, split_tables, feature_tables, errors

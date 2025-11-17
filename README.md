@@ -13,10 +13,13 @@ The original monolithic notebooks have been decomposed into focused workflows th
 ### `AtyAN_UnivariateModels.ipynb`
 - Merges the original univariate onset-prediction workflow with the persistence/remission cohort so all single-feature analyses live in one place.
 - Recreates the onset prediction task (dropping baseline AN/AAN diagnoses and labeling any mBMI-defined onset across waves 1–6) and the cleaned persistence vs. remission labeling before running the logistic regressions.
+- Adds the same model zoo used by the multivariate notebook (balanced RF, logistic regression, iBRF, TabPFN RF, AutoTabPFN) with stratified repeated holdout so the onset and persistence cohorts can be compared quickly in Colab.
 
 ### `AtyAN_MultivariateModels.ipynb`
-- Reuses the persistence cohort and evaluates the multivariate models (logistic regression, calibrated linear SVM, gradient boosting, random forest, and the BRF-inspired balanced forest).
-- Surfaces cross-validated metrics and the tree-based feature importances while skipping the deprecated classification-tree heuristics.
+- Reuses the persistence cohort and evaluates the model zoo (balanced RF, logistic regression, iBRF, TabPFN RF, AutoTabPFN) with stratified repeated holdout to mirror the univariate notebook.
+- Surfaces split-level metrics, overfitting flags, and the feature-importance tables where the estimators expose them.
+
+All notebooks now start with a minimal `pip install -r requirements.txt` cell so Colab runtimes can hydrate the dependencies without manual Drive mounts. The TabPFN components require an up-to-date `torch` with CUDA support on GPU runtimes; the provided `requirements.txt` installs `torch>=2.1`, `tabpfn`, and `tabpfn-extensions[all]` in the correct order.
 
 ## Shared utilities
 
@@ -32,15 +35,29 @@ conda activate atyAN
 pip install -r requirements.txt
 ```
 
-For Google Colab, run the following once you have uploaded/cloned the repository so all notebooks share the same dependencies:
+For Google Colab, run the following once you have uploaded/cloned the repository so all notebooks share the same dependencies and to ensure TabPFN/iBRF stay synced with PyTorch:
 
 ```python
 !pip install -q -r requirements.txt
 ```
 
+If the GPU runtime ships with an older CUDA build, upgrade PyTorch first (e.g., `pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121`) and then re-run the requirements cell so `tabpfn-extensions` links against the refreshed stack.
+
+## Model zoo and repeated holdout
+
+`analysis_utils.py` exposes both the per-feature logistic regressions and a reusable model zoo. Each dataset (univariate onset, univariate persistence, multivariate persistence) can run the five requested estimators:
+
+1. Balanced random forest (with `class_weight`/balanced subsampling tuned for ~3% positives).
+2. Logistic regression with class weights and strong regularization.
+3. Improved Balanced Random Forest (`iBRF` with `balance_split=0.65`, `n_estimators=200`).
+4. TabPFN Random Forest (`RandomForestTabPFNClassifier` with shallow trees on top of a base TabPFN transformer).
+5. AutoTabPFN (post-hoc ensemble with the "medium_quality" preset for tractable runtime).
+
+All of them share the same stratified repeated holdout routine (configurable repeats/test-size) and surface train/test ROC-AUC deltas so overfitting can be spotted without rerunning the full suite.
+
 ## Command-line execution
 
-`main.py` provides a lightweight driver when you want to run the workflows without opening the notebooks. By default, all segments are executed and their outputs are written under `results/` as CSVs.
+`main.py` provides a lightweight driver when you want to run the workflows without opening the notebooks. By default, all segments are executed and their outputs are written under `results/` as CSVs. Use the `--model-names` flag when you only need to rerun a subset of the zoo (e.g., to recheck TabPFN without touching the forests), and adjust the repeated holdout parameters to probe stability.
 
 ```bash
 python main.py                           # run ANOVA + univariate + multivariate
@@ -48,4 +65,6 @@ python main.py --run-anova               # ANOVA only
 python main.py --run-univariate          # univariate logistics only
 python main.py --run-multivariate        # multivariate persistence models only
 python main.py --output-dir outputs_dir  # customize the export folder
+python main.py --model-names logistic_regression,tabpfn_random_forest
+python main.py --holdout-repeats 10 --holdout-test-size 0.25
 ```
