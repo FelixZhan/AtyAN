@@ -26,16 +26,24 @@ from sklearn.preprocessing import StandardScaler
 
 DATA_PATH = Path(__file__).resolve().parent / "BP1234-ONSET.csv"
 WAVES: List[int] = [1, 2, 3, 4, 5, 6]
-BASELINE_RISK_COLS: List[str] = [
-    "w1tii",
-    "w1bs",
-    "w1dres",
-    "w1socf",
-    "w1dep",
-    "w1intbmi",
-    "w1age",
+PERSISTENCE_WAVES: List[int] = [1, 4, 5, 6]
+RISK_SUFFIXES: List[str] = ["tii", "bs", "dres", "socf", "dep", "intbmi"]
+BASELINE_RISK_COLS: List[str] = [f"w1{suffix}" for suffix in RISK_SUFFIXES]
+PRODROMAL_FEATURE_NAMES: List[str] = ["BE", "CB", "WSO", "FEAR", "FAT", "LEB"]
+PERSISTENCE_BASE_FEATURES: List[str] = BASELINE_RISK_COLS + [
+    f"{name}_w1" for name in PRODROMAL_FEATURE_NAMES
 ]
-CB_COLUMNS = ["w1ed8a", "w1ed9a", "w1ed10a", "w1ed11a"]
+UNIVARIATE_ONSET_FEATURES: List[str] = [
+    "FEAR_w1",
+    "WSO_w1",
+    "FAT_w1",
+    "CB_w1",
+    "w1dres",
+    "w1dep",
+    "w1tii",
+    "w1socf",
+]
+CB_COLUMN_SUFFIXES = ["ed8a", "ed9a", "ed10a", "ed11a"]
 TRUTHY_STRINGS = {"TRUE", "T", "YES", "Y", "1", "PRESENT"}
 FALSY_STRINGS = {"FALSE", "F", "NO", "N", "0", "ABSENT"}
 
@@ -83,43 +91,310 @@ def _coerce_boolean(series: pd.Series) -> pd.Series:
     return out
 
 
+def _onset_column_for_wave(wave: int) -> str:
+    return "w1ONSET-FULL" if wave == 1 else f"w{wave}ONSET-FULL-mBMI"
+
+
+def _cb_columns_for_wave(wave: int) -> List[str]:
+    return [f"w{wave}{suffix}" for suffix in CB_COLUMN_SUFFIXES]
+
+
+def _next_persistence_wave(wave: int) -> Optional[int]:
+    if wave not in PERSISTENCE_WAVES:
+        return None
+    idx = PERSISTENCE_WAVES.index(wave)
+    if idx + 1 >= len(PERSISTENCE_WAVES):
+        return None
+    return PERSISTENCE_WAVES[idx + 1]
+
+
+def _coerce_wave_risk_features(work: pd.DataFrame, wave: int) -> List[str]:
+    cols: List[str] = []
+    for suffix in RISK_SUFFIXES:
+        col = f"w{wave}{suffix}"
+        if col not in work.columns:
+            continue
+        work[col] = _coerce_numeric(work[col])
+        cols.append(col)
+    return cols
+
+
+def _engineer_wave_prodromals(work: pd.DataFrame, wave: int) -> List[str]:
+    cols: List[str] = []
+    base = pd.Series(np.nan, index=work.index)
+
+    be_src = f"w{wave}ede1a"
+    work[f"BE_w{wave}"] = _coerce_numeric(work.get(be_src, base))
+    cols.append(f"BE_w{wave}")
+
+    cb_present = [c for c in _cb_columns_for_wave(wave) if c in work.columns]
+    if cb_present:
+        cb_block = work[cb_present].apply(_coerce_numeric)
+        work[f"CB_w{wave}"] = cb_block.max(axis=1, skipna=True)
+        work.loc[cb_block.notna().sum(axis=1) == 0, f"CB_w{wave}"] = np.nan
+    else:
+        work[f"CB_w{wave}"] = np.nan
+    cols.append(f"CB_w{wave}")
+
+    work[f"WSO_w{wave}"] = _coerce_numeric(work.get(f"w{wave}ed15a", base))
+    work[f"FEAR_w{wave}"] = _coerce_numeric(work.get(f"w{wave}ed17a", base))
+    work[f"FAT_w{wave}"] = _coerce_numeric(work.get(f"w{wave}ed19a", base))
+    cols.extend([f"WSO_w{wave}", f"FEAR_w{wave}", f"FAT_w{wave}"])
+
+    mbmi_pct = _coerce_numeric(work.get(f"w{wave}mbmi_pct", base))
+    work[f"LEB_w{wave}"] = np.clip(90.0 - mbmi_pct, 0, None) / 90.0
+    cols.append(f"LEB_w{wave}")
+
+    return cols
+
+
 def engineer_baseline_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, List[str]]]:
     """Create the baseline risk and prodromal composites used across notebooks."""
     work = df.copy()
 
-    risk_cols: List[str] = []
-    for col in BASELINE_RISK_COLS:
-        if col in work.columns:
-            work[col] = _coerce_numeric(work[col])
-            risk_cols.append(col)
+    risk_cols_by_wave: Dict[int, List[str]] = {}
+    prodromal_cols_by_wave: Dict[int, List[str]] = {}
+    for wave in PERSISTENCE_WAVES:
+        risk_cols_by_wave[wave] = _coerce_wave_risk_features(work, wave)
+        prodromal_cols_by_wave[wave] = _engineer_wave_prodromals(work, wave)
 
-    work["BE_w1"] = _coerce_numeric(work.get("w1ede1a", pd.Series(np.nan, index=work.index)))
+    anova_features = list(
+        dict.fromkeys(risk_cols_by_wave.get(1, []) + prodromal_cols_by_wave.get(1, []))
+    )
 
-    cb_present = [c for c in CB_COLUMNS if c in work.columns]
-    if cb_present:
-        cb_block = work[cb_present].apply(_coerce_numeric)
-        work["CB_w1"] = cb_block.max(axis=1, skipna=True)
-        work.loc[cb_block.notna().sum(axis=1) == 0, "CB_w1"] = np.nan
-    else:
-        work["CB_w1"] = np.nan
+    _annotate_persistence_and_remission(work)
+    _populate_persistence_baselines(work)
 
-    work["WSO_w1"] = _coerce_numeric(work.get("w1ed15a", pd.Series(np.nan, index=work.index)))
-    work["FEAR_w1"] = _coerce_numeric(work.get("w1ed17a", pd.Series(np.nan, index=work.index)))
-    work["FAT_w1"] = _coerce_numeric(work.get("w1ed19a", pd.Series(np.nan, index=work.index)))
-
-    mbmi_pct = _coerce_numeric(work.get("w1mbmi_pct", pd.Series(np.nan, index=work.index)))
-    work["LEB_w1"] = np.clip(90.0 - mbmi_pct, 0, None) / 90.0
-
-    prodromal_cols = [c for c in ["BE_w1", "CB_w1", "WSO_w1", "FEAR_w1", "FAT_w1", "LEB_w1"] if c in work.columns]
-    all_features = list(dict.fromkeys(risk_cols + prodromal_cols))
+    persistence_feature_cols = [
+        f"{col}-persistence" for col in PERSISTENCE_BASE_FEATURES if f"{col}-persistence" in work.columns
+    ]
+    onset_features = [col for col in UNIVARIATE_ONSET_FEATURES if col in work.columns]
+    all_features = list(dict.fromkeys(anova_features + persistence_feature_cols))
 
     feature_sets = {
-        "risk": risk_cols,
-        "prodromal": prodromal_cols,
+        "risk": risk_cols_by_wave.get(1, []),
+        "prodromal": prodromal_cols_by_wave.get(1, []),
+        "anova_features": anova_features,
+        "onset_features": onset_features,
+        "persistence_features": persistence_feature_cols,
         "all_features": all_features,
-        "outcomes": all_features,
+        "outcomes": anova_features,
     }
     return work, feature_sets
+
+
+def _bool_from_cell(value) -> bool:
+    if value is pd.NA or pd.isna(value):  # type: ignore[arg-type]
+        return False
+    return bool(value)
+
+
+def _float_from_cell(value) -> float:
+    if value is pd.NA or pd.isna(value):  # type: ignore[arg-type]
+        return float("nan")
+    return float(value)
+
+
+def _split_onset_runs(onset_flags: Dict[int, bool]) -> List[List[int]]:
+    runs: List[List[int]] = []
+    current: List[int] = []
+    for wave in PERSISTENCE_WAVES:
+        if onset_flags.get(wave, False):
+            current.append(wave)
+        else:
+            if current:
+                runs.append(current)
+                current = []
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _evaluate_persistence_run(
+    run: List[int], ed14_vals: Dict[int, float], ed16_vals: Dict[int, float]
+) -> Tuple[bool, bool]:
+    detected = False
+    assessable = False
+    for wave in run:
+        next_wave = _next_persistence_wave(wave)
+        if next_wave is None:
+            continue
+        val14 = ed14_vals.get(next_wave, float("nan"))
+        val16 = ed16_vals.get(next_wave, float("nan"))
+        if math.isnan(val14) or math.isnan(val16):
+            continue
+        assessable = True
+        if val14 >= 5 and val16 >= 5:
+            detected = True
+            break
+    return detected, assessable
+
+
+def _evaluate_remission_run(
+    run: List[int], ed14_vals: Dict[int, float], ed16_vals: Dict[int, float]
+) -> Tuple[bool, bool]:
+    if not run:
+        return False, False
+    start_wave = run[0]
+    try:
+        start_idx = PERSISTENCE_WAVES.index(start_wave)
+    except ValueError:
+        return False, False
+    drop_found = False
+    recovery_data_available = False
+    detected = False
+    for wave in PERSISTENCE_WAVES[start_idx + 1 :]:
+        val14 = ed14_vals.get(wave, float("nan"))
+        val16 = ed16_vals.get(wave, float("nan"))
+        if math.isnan(val14) and math.isnan(val16):
+            continue
+        below = False
+        if not math.isnan(val14) and val14 < 5:
+            below = True
+        if not math.isnan(val16) and val16 < 5:
+            below = True
+        if not drop_found:
+            if below:
+                drop_found = True
+            continue
+        if math.isnan(val14) or math.isnan(val16):
+            continue
+        recovery_data_available = True
+        if val14 >= 5 and val16 >= 5:
+            detected = True
+            break
+    assessable = drop_found and recovery_data_available
+    return detected, assessable
+
+
+def _evaluate_persistence(
+    runs: List[List[int]], ed14_vals: Dict[int, float], ed16_vals: Dict[int, float]
+) -> Tuple[bool, bool, Optional[int]]:
+    detected = False
+    assessable = False
+    baseline_wave: Optional[int] = None
+    for run in runs:
+        run_detected, run_assessable = _evaluate_persistence_run(run, ed14_vals, ed16_vals)
+        assessable = assessable or run_assessable
+        if run_detected:
+            detected = True
+            baseline_wave = run[0]
+            break
+    if assessable and baseline_wave is None and runs:
+        baseline_wave = runs[0][0]
+    return detected, assessable, baseline_wave
+
+
+def _evaluate_remission(
+    runs: List[List[int]], ed14_vals: Dict[int, float], ed16_vals: Dict[int, float]
+) -> Tuple[bool, bool, Optional[int]]:
+    detected = False
+    assessable = False
+    baseline_wave: Optional[int] = None
+    for run in runs:
+        run_detected, run_assessable = _evaluate_remission_run(run, ed14_vals, ed16_vals)
+        assessable = assessable or run_assessable
+        if run_detected:
+            detected = True
+            baseline_wave = run[0]
+            break
+    if assessable and baseline_wave is None and runs:
+        baseline_wave = runs[0][0]
+    return detected, assessable, baseline_wave
+
+
+def _annotate_persistence_and_remission(work: pd.DataFrame) -> None:
+    base = pd.Series(np.nan, index=work.index)
+    onset_helpers: Dict[int, str] = {}
+    ed14_helpers: Dict[int, str] = {}
+    ed16_helpers: Dict[int, str] = {}
+    for wave in PERSISTENCE_WAVES:
+        onset_col = _onset_column_for_wave(wave)
+        onset_helpers[wave] = f"_aan_onset_w{wave}"
+        work[onset_helpers[wave]] = _coerce_boolean(work.get(onset_col, base))
+        ed14_helpers[wave] = f"_aan_ed14_w{wave}"
+        ed16_helpers[wave] = f"_aan_ed16_w{wave}"
+        work[ed14_helpers[wave]] = _coerce_numeric(work.get(f"w{wave}ed14", base))
+        work[ed16_helpers[wave]] = _coerce_numeric(work.get(f"w{wave}ed16", base))
+
+    persistence_labels: List[float] = []
+    persistence_waves: List[object] = []
+    remission_labels: List[float] = []
+    remission_waves: List[object] = []
+    course_flags: List[object] = []
+
+    for idx in work.index:
+        onset_flags = {wave: _bool_from_cell(work.at[idx, onset_helpers[wave]]) for wave in PERSISTENCE_WAVES}
+        aan_member = any(onset_flags.values())
+        ed14_vals = {wave: _float_from_cell(work.at[idx, ed14_helpers[wave]]) for wave in PERSISTENCE_WAVES}
+        ed16_vals = {wave: _float_from_cell(work.at[idx, ed16_helpers[wave]]) for wave in PERSISTENCE_WAVES}
+        runs = _split_onset_runs(onset_flags)
+
+        persistence_detected, persistence_assessable, persistence_wave = _evaluate_persistence(
+            runs, ed14_vals, ed16_vals
+        )
+        remission_detected, remission_assessable, remission_wave = _evaluate_remission(
+            runs, ed14_vals, ed16_vals
+        )
+
+        if not aan_member or not persistence_assessable:
+            persistence_labels.append(float("nan"))
+            persistence_waves.append(pd.NA)
+        else:
+            persistence_labels.append(1.0 if persistence_detected else 0.0)
+            persistence_waves.append(persistence_wave if persistence_wave is not None else pd.NA)
+
+        if not aan_member or not remission_assessable:
+            remission_labels.append(float("nan"))
+            remission_waves.append(pd.NA)
+        else:
+            remission_labels.append(1.0 if remission_detected else 0.0)
+            remission_waves.append(remission_wave if remission_wave is not None else pd.NA)
+
+        if not aan_member:
+            course_flags.append(-1)
+        elif persistence_detected and remission_detected:
+            course_flags.append(-2)
+        elif persistence_detected:
+            course_flags.append(1)
+        elif remission_detected:
+            course_flags.append(0)
+        else:
+            course_flags.append(pd.NA)
+
+    work["aan_persistence"] = pd.Series(persistence_labels, index=work.index, dtype="Float64")
+    work["aan_persistence_wave"] = pd.Series(persistence_waves, index=work.index, dtype="Int64")
+    work["aan_remission"] = pd.Series(remission_labels, index=work.index, dtype="Float64")
+    work["aan_remission_wave"] = pd.Series(remission_waves, index=work.index, dtype="Int64")
+    work["aan_course_flag"] = pd.Series(course_flags, index=work.index, dtype="Int64")
+
+    helper_cols = list(onset_helpers.values()) + list(ed14_helpers.values()) + list(ed16_helpers.values())
+    work.drop(columns=[c for c in helper_cols if c in work.columns], inplace=True, errors="ignore")
+
+
+def _resolve_persistence_source_column(base_col: str, wave: int) -> Optional[str]:
+    if base_col.startswith("w1"):
+        return f"w{wave}{base_col[2:]}"
+    if base_col.endswith("_w1"):
+        return f"{base_col[:-3]}_w{wave}"
+    return None
+
+
+def _populate_persistence_baselines(work: pd.DataFrame) -> None:
+    if "aan_persistence_wave" not in work.columns:
+        return
+    baseline_wave = work["aan_persistence_wave"]
+    for base_col in PERSISTENCE_BASE_FEATURES:
+        target = f"{base_col}-persistence"
+        work[target] = np.nan
+        for wave in PERSISTENCE_WAVES:
+            source = _resolve_persistence_source_column(base_col, wave)
+            if source is None or source not in work.columns:
+                continue
+            mask = (baseline_wave == wave).fillna(False)
+            if not mask.any():
+                continue
+            work.loc[mask, target] = work.loc[mask, source]
 
 
 def _match_prefix_columns(df: pd.DataFrame, prefixes: Sequence[str]) -> List[str]:
@@ -287,46 +562,16 @@ def run_disorder_level_anova(df: pd.DataFrame, outcomes: Sequence[str]) -> pd.Da
     return combined.sort_values(["outcome", "disorder", "level"])
 
 
-def _detect_onset_columns(df: pd.DataFrame) -> List[str]:
-    cols: List[str] = []
-    for wave in WAVES:
-        primary = f"w{wave}ONSET-FULL"
-        if primary in df.columns:
-            cols.append(primary)
-        mbmi = f"w{wave}ONSET-FULL-mBMI"
-        if mbmi in df.columns:
-            cols.append(mbmi)
-    return cols
-
-
-def _persistence_label(row: pd.Series) -> float:
-    arr = row.dropna().astype(bool).to_numpy()
-    if not arr.size or not arr.any():
-        return math.nan
-    first = np.argmax(arr)
-    last = len(arr) - 1 - np.argmax(arr[::-1])
-    segment = arr[first : last + 1]
-    has_gap = (~segment).any()
-    return 1.0 if not has_gap else 0.0
-
-
 def prepare_persistence_dataset(
     df: pd.DataFrame,
     feature_cols: Sequence[str],
-    onset_cols: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
-    cols = list(onset_cols) if onset_cols else _detect_onset_columns(df)
-    present_cols = [c for c in cols if c in df.columns]
-    if not present_cols:
-        raise ValueError("No onset columns available in the dataset.")
-    onset_block = df[present_cols].apply(_coerce_boolean)
-    eligible = onset_block.any(axis=1)
-    complete = onset_block.notna().all(axis=1)
-    subset = df.loc[eligible & complete].copy()
-    subset["aan_persistence"] = onset_block.loc[subset.index].apply(_persistence_label, axis=1)
-    subset = subset.dropna(subset=["aan_persistence"])
+    if "aan_persistence" not in df.columns:
+        raise ValueError("Persistence labels are missing. Run engineer_baseline_features first.")
+    subset = df.loc[df["aan_persistence"].notna()].copy()
     usable_features = [c for c in feature_cols if c in subset.columns]
-    return subset[usable_features + ["aan_persistence"]]
+    extra_cols = [c for c in ["aan_remission", "aan_course_flag"] if c in subset.columns]
+    return subset[usable_features + ["aan_persistence"] + extra_cols]
 
 
 def prepare_univariate_prediction_dataset(
@@ -447,11 +692,11 @@ def _logistic_pipeline(random_state: int = 42) -> Pipeline:
     ])
 
 
-def _balanced_rf_pipeline(random_state: int = 42) -> Pipeline:
+def _balanced_rf_pipeline(random_state: int = 42, max_depth: int = 6) -> Pipeline:
     if ImblearnBRF is not None:
         model = ImblearnBRF(
             n_estimators=800,
-            max_depth=6,
+            max_depth=max_depth,
             min_samples_leaf=20,
             sampling_strategy="auto",
             replacement=False,
@@ -460,7 +705,7 @@ def _balanced_rf_pipeline(random_state: int = 42) -> Pipeline:
     else:
         model = SimpleBalancedRandomForestClassifier(
             n_estimators=800,
-            max_depth=6,
+            max_depth=max_depth,
             min_samples_leaf=20,
             random_state=random_state,
         )
@@ -510,7 +755,9 @@ def _auto_tabpfn_pipeline(random_state: int = 42) -> Pipeline:
 
 def _model_builders(random_state: int = 42) -> Dict[str, Callable[[], Pipeline]]:
     return {
-        "balanced_random_forest": lambda: _balanced_rf_pipeline(random_state),
+        "balanced_random_forest_shallow": lambda: _balanced_rf_pipeline(random_state, max_depth=3),
+        "balanced_random_forest": lambda: _balanced_rf_pipeline(random_state, max_depth=6),
+        "balanced_random_forest_deep": lambda: _balanced_rf_pipeline(random_state, max_depth=12),
         "logistic_regression": lambda: _logistic_pipeline(random_state),
         "ibrf": lambda: _ibrf_pipeline(random_state),
         "tabpfn_random_forest": lambda: _tabpfn_rf_pipeline(random_state),

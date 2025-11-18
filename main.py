@@ -57,7 +57,8 @@ def run_anova_segment(df: pd.DataFrame, feature_cols: Sequence[str], output_dir:
 
 def run_univariate_segment(
     df: pd.DataFrame,
-    feature_cols: Sequence[str],
+    onset_feature_cols: Sequence[str],
+    persistence_feature_cols: Sequence[str],
     output_dir: Path,
     model_names: Optional[Sequence[str]] = None,
     repeats: int = 5,
@@ -65,10 +66,10 @@ def run_univariate_segment(
 ) -> None:
     print("Running univariate onset-prediction logistics…")
     uni_dir = _ensure_dir(output_dir / "univariate")
-    onset_df = prepare_univariate_prediction_dataset(df, feature_cols)
+    onset_df = prepare_univariate_prediction_dataset(df, onset_feature_cols)
     onset_results = run_univariate_logistic_regressions(
         onset_df,
-        feature_cols,
+        onset_feature_cols,
         target_col="aan_onset_anywave",
         repeats=repeats,
         test_size=test_size,
@@ -79,10 +80,10 @@ def run_univariate_segment(
         onset_results.to_csv(uni_dir / "onset_logistic_metrics.csv", index=False)
 
     print("Running univariate persistence vs. remission logistics…")
-    persistence_df = prepare_persistence_dataset(df, feature_cols)
+    persistence_df = prepare_persistence_dataset(df, persistence_feature_cols)
     persistence_results = run_univariate_logistic_regressions(
         persistence_df,
-        feature_cols,
+        persistence_feature_cols,
         target_col="aan_persistence",
         repeats=repeats,
         test_size=test_size,
@@ -95,7 +96,7 @@ def run_univariate_segment(
     print("Running onset model zoo…")
     onset_metrics, onset_splits, _, onset_errors = evaluate_model_zoo(
         onset_df,
-        feature_cols,
+        onset_feature_cols,
         target_col="aan_onset_anywave",
         model_names=model_names,
         repeats=repeats,
@@ -112,7 +113,7 @@ def run_univariate_segment(
     print("Running persistence model zoo…")
     persistence_metrics, persistence_splits, feature_tables, persistence_errors = evaluate_model_zoo(
         persistence_df,
-        feature_cols,
+        persistence_feature_cols,
         target_col="aan_persistence",
         model_names=model_names,
         repeats=repeats,
@@ -136,7 +137,7 @@ def run_univariate_segment(
 
 def run_multivariate_segment(
     df: pd.DataFrame,
-    feature_cols: Sequence[str],
+    persistence_feature_cols: Sequence[str],
     output_dir: Path,
     model_names: Optional[Sequence[str]] = None,
     repeats: int = 5,
@@ -144,10 +145,10 @@ def run_multivariate_segment(
 ) -> None:
     print("Running multivariate models for persistence vs. remission…")
     multi_dir = _ensure_dir(output_dir / "multivariate")
-    persistence_df = prepare_persistence_dataset(df, feature_cols)
+    persistence_df = prepare_persistence_dataset(df, persistence_feature_cols)
     metrics, split_tables, feature_tables, errors = evaluate_model_zoo(
         persistence_df,
-        feature_cols,
+        persistence_feature_cols,
         target_col="aan_persistence",
         model_names=model_names,
         repeats=repeats,
@@ -228,16 +229,19 @@ def main() -> None:
 
     df_raw = load_base_dataset()
     df_engineered, feature_sets = engineer_baseline_features(df_raw)
-    feature_cols = feature_sets["all_features"]
+    anova_features = feature_sets.get("anova_features", [])
+    onset_features = feature_sets.get("onset_features", [])
+    persistence_features = feature_sets.get("persistence_features", [])
 
     output_dir = _ensure_dir(Path(args.output_dir))
 
     if args.run_anova or run_all:
-        run_anova_segment(df_engineered, feature_cols, output_dir)
+        run_anova_segment(df_engineered, anova_features, output_dir)
     if args.run_univariate or run_all:
         run_univariate_segment(
             df_engineered,
-            feature_cols,
+            onset_features,
+            persistence_features,
             output_dir,
             model_names=model_names,
             repeats=args.holdout_repeats,
@@ -246,7 +250,7 @@ def main() -> None:
     if args.run_multivariate or run_all:
         run_multivariate_segment(
             df_engineered,
-            feature_cols,
+            persistence_features,
             output_dir,
             model_names=model_names,
             repeats=args.holdout_repeats,
