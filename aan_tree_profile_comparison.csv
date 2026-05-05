@@ -1,0 +1,3 @@
+profile,label,n_leaves,internal_splits,max_depth_realized,onset_positive_leaves,max_leaf_incidence,f_stat,classification_rate
+cta_primary,CTA-style primary 6-leaf manuscript tree,6,5,3,6,0.25,101.9498211428996,0.9692387904066736
+cta_7leaf_sensitivity,CTA-style 7-leaf sensitivity tree,7,6,4,6,0.25,115.49414274516525,0.9692387904066736

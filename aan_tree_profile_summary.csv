@@ -1,0 +1,2 @@
+profile,label,n_leaves,internal_splits,max_depth_realized,onset_positive_leaves,max_leaf_incidence,f_stat,classification_rate
+cta_primary,CTA-style primary manuscript tree (6 terminal nodes),6,5,3,6,0.25,101.9498211428996,0.9692387904066736

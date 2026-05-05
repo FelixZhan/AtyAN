@@ -1,0 +1,137 @@
+{
+  "uncalibrated": {
+    "brf": {
+      "auc": 0.7736948407933805,
+      "auprc": 0.08103489129972553,
+      "brier": 0.15457918246352795,
+      "cal_int": -3.0818022629482846,
+      "cal_slope": 1.0142457041126391,
+      "ece": 0.30506441709053944
+    },
+    "logistic": {
+      "auc": 0.7707443293403698,
+      "auprc": 0.09030643490126047,
+      "brier": 0.17924585134497875,
+      "cal_int": -3.2660388786940677,
+      "cal_slope": 0.6143970875860714,
+      "ece": 0.31012105011030444
+    }
+  },
+  "calibrated": {
+    "brf": {
+      "auc": 0.7416394419158778,
+      "auprc": 0.07628212368962146,
+      "brier": 0.034973812194827876,
+      "cal_int": -1.9407831546860579,
+      "cal_slope": 0.22533061470695886,
+      "ece": 0.03156994596180486
+    },
+    "logistic": {
+      "auc": 0.7710980184104469,
+      "auprc": 0.09104849378548106,
+      "brier": 0.03003681947931234,
+      "cal_int": -0.6890982126319531,
+      "cal_slope": 0.7611452923637183,
+      "ece": 0.00867136690843714
+    }
+  },
+  "thresholds": {
+    "uncalibrated": {
+      "brf": {
+        "threshold": 0.38,
+        "auc": 0.7736948407933805,
+        "accuracy": 0.622872340425532,
+        "sensitivity": 0.847457627118644,
+        "specificity": 0.615595826468973,
+        "balanced_accuracy": 0.7315267267938086
+      },
+      "logistic": {
+        "threshold": 0.48,
+        "auc": 0.7707443293403698,
+        "accuracy": 0.7212765957446808,
+        "sensitivity": 0.711864406779661,
+        "specificity": 0.7215815485996705,
+        "balanced_accuracy": 0.7167229776896658
+      }
+    },
+    "calibrated": {
+      "brf": {
+        "threshold": 0.01,
+        "auc": 0.7416394419158778,
+        "accuracy": 0.7787234042553192,
+        "sensitivity": 0.559322033898305,
+        "specificity": 0.785831960461285,
+        "balanced_accuracy": 0.672576997179795
+      },
+      "logistic": {
+        "threshold": 0.04000000000000001,
+        "auc": 0.7710980184104469,
+        "accuracy": 0.7808510638297872,
+        "sensitivity": 0.6440677966101694,
+        "specificity": 0.785282811641955,
+        "balanced_accuracy": 0.7146753041260623
+      }
+    }
+  },
+  "best_params": {
+    "brf": [
+      {
+        "model__max_depth": 6,
+        "model__max_features": "sqrt",
+        "model__min_samples_leaf": 4,
+        "model__n_estimators": 300
+      },
+      {
+        "model__max_depth": 6,
+        "model__max_features": "sqrt",
+        "model__min_samples_leaf": 1,
+        "model__n_estimators": 500
+      },
+      {
+        "model__max_depth": 10,
+        "model__max_features": "sqrt",
+        "model__min_samples_leaf": 4,
+        "model__n_estimators": 800
+      },
+      {
+        "model__max_depth": 6,
+        "model__max_features": "sqrt",
+        "model__min_samples_leaf": 1,
+        "model__n_estimators": 300
+      },
+      {
+        "model__max_depth": 6,
+        "model__max_features": "sqrt",
+        "model__min_samples_leaf": 1,
+        "model__n_estimators": 800
+      }
+    ],
+    "logistic": [
+      {
+        "model__C": 1,
+        "model__penalty": "l2",
+        "model__solver": "saga"
+      },
+      {
+        "model__C": 1,
+        "model__penalty": "l1",
+        "model__solver": "saga"
+      },
+      {
+        "model__C": 0.1,
+        "model__penalty": "l2",
+        "model__solver": "liblinear"
+      },
+      {
+        "model__C": 0.01,
+        "model__penalty": "l2",
+        "model__solver": "saga"
+      },
+      {
+        "model__C": 0.1,
+        "model__penalty": "l1",
+        "model__solver": "saga"
+      }
+    ]
+  }
+}

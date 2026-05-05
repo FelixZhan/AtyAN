@@ -1,0 +1,12 @@
+node,parent_node,branch,depth,x_center,y_center,is_terminal,condition_text,branch_size_line,incidence_line,nonincidence_line,box_text
+0,,root,0,0.5,0.89,False,Incident AAN,,Incidence: 59 (3.1%),No incidence: 1859 (96.9%),Incident AAN | Incidence: 59 (3.1%) | No incidence: 1859 (96.9%)
+1,0.0,left,1,0.161,0.707,False,Body dissatisfaction | < 4.37,Branch size: 1686,Incidence: 37 (2.2%),No incidence: 1649 (97.8%),Body dissatisfaction | < 4.37 | Branch size: 1686 | Incidence: 37 (2.2%) | No incidence: 1649 (97.8%)
+2,0.0,right,1,0.839,0.647,False,Body dissatisfaction | >= 4.37,Branch size: 232,Incidence: 22 (9.5%),No incidence: 210 (90.5%),Body dissatisfaction | >= 4.37 | Branch size: 232 | Incidence: 22 (9.5%) | No incidence: 210 (90.5%)
+5,1.0,left,2,0.03,0.488,True,Feeling fat < 2.50,Branch size: 959,Incidence: 8 (0.8%),No incidence: 951 (99.2%),Feeling fat < 2.50 | Branch size: 959 | Incidence: 8 (0.8%) | No incidence: 951 (99.2%)
+6,1.0,right,2,0.3,0.438,False,Feeling fat >= 2.50,Branch size: 727,Incidence: 29 (4.0%),No incidence: 698 (96.0%),Feeling fat >= 2.50 | Branch size: 727 | Incidence: 29 (4.0%) | No incidence: 698 (96.0%)
+3,2.0,left,2,0.7,0.488,False,Psychosocial | functioning < 3.21,Branch size: 208,Incidence: 16 (7.7%),No incidence: 192 (92.3%),Psychosocial | functioning < 3.21 | Branch size: 208 | Incidence: 16 (7.7%) | No incidence: 192 (92.3%)
+4,2.0,right,2,0.97,0.438,True,Psychosocial | functioning >= 3.21,Branch size: 24,Incidence: 6 (25.0%),No incidence: 18 (75.0%),Psychosocial | functioning >= 3.21 | Branch size: 24 | Incidence: 6 (25.0%) | No incidence: 18 (75.0%)
+7,6.0,left,3,0.214,0.27,True,Condition: BP vs | Control/HW < 0.50,Branch size: 270,Incidence: 19 (7.0%),No incidence: 251 (93.0%),Condition: BP vs | Control/HW < 0.50 | Branch size: 270 | Incidence: 19 (7.0%) | No incidence: 251 (93.0%)
+8,6.0,right,3,0.394,0.23,True,Condition: BP vs | Control/HW >= 0.50,Branch size: 457,Incidence: 10 (2.2%),No incidence: 447 (97.8%),Condition: BP vs | Control/HW >= 0.50 | Branch size: 457 | Incidence: 10 (2.2%) | No incidence: 447 (97.8%)
+9,3.0,left,3,0.606,0.27,True,BMI < 33.50,Branch size: 172,Incidence: 10 (5.8%),No incidence: 162 (94.2%),BMI < 33.50 | Branch size: 172 | Incidence: 10 (5.8%) | No incidence: 162 (94.2%)
+10,3.0,right,3,0.786,0.23,True,BMI >= 33.50,Branch size: 36,Incidence: 6 (16.7%),No incidence: 30 (83.3%),BMI >= 33.50 | Branch size: 36 | Incidence: 6 (16.7%) | No incidence: 30 (83.3%)

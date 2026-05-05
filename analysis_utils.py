@@ -24,7 +24,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-DATA_PATH = Path(__file__).resolve().parent / "BP1234-ONSET.csv"
+DATA_PATH = Path(__file__).resolve().parent / "AAN-ONSET-MERGED.csv"
 WAVES: List[int] = [1, 2, 3, 4, 5, 6]
 PERSISTENCE_WAVES: List[int] = [1, 4, 5, 6]
 RISK_SUFFIXES: List[str] = ["tii", "bs", "dres", "socf", "dep", "intbmi"]
@@ -578,13 +578,17 @@ def prepare_univariate_prediction_dataset(
     df: pd.DataFrame,
     feature_cols: Sequence[str],
     onset_weight_label: str = "mBMI",
+    exclude_full_partial_an: bool = True,
 ) -> pd.DataFrame:
     """Dataset for the univariate onset prediction models."""
 
-    mask_fan = has_cols(df, ["fan"])
-    mask_pan = has_cols(df, ["pan"])
     mask_w1_onset = _coerce_boolean(df.get("w1ONSET-FULL", pd.Series(np.nan, index=df.index))).fillna(False)
-    subset = df.loc[~(mask_fan | mask_pan | mask_w1_onset)].copy()
+    if exclude_full_partial_an:
+        mask_fan = has_cols(df, ["fan"])
+        mask_pan = has_cols(df, ["pan"])
+        subset = df.loc[~(mask_fan | mask_pan | mask_w1_onset)].copy()
+    else:
+        subset = df.loc[~mask_w1_onset].copy()
 
     onset_pattern = re.compile(
         rf"^w([1-6])ONSET-FULL-{re.escape(onset_weight_label)}$",

@@ -1,0 +1,5 @@
+step,n_removed,n_remaining,reason,pct_remaining_of_total
+Initial sample,0,1952,All participants in source dataset,100.0
+Exclude baseline AAN,34,1918,w1ONSET-FULL indicates baseline AAN onset,98.26
+Exclude baseline AN/BE/BN/FPU (.00 only),0,1918,"Any of fan.00/pan.00, fbe.00/pbe.00, fbn.00/pbn.00, fpu.00 among participants not removed in prior step",98.26
+Aim 2 analytic sample,0,1918,Participants included in incident-onset modeling,98.26

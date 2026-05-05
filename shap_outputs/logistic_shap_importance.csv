@@ -1,0 +1,15 @@
+feature_english,mean_abs_shap
+Lower-than-expected BMI,0.3204677504988403
+Fear of weight gain,0.3166093665880477
+BP (vs Control/HW),0.30608380012962577
+Negative affect,0.27681678022931805
+Weight/shape overvaluation,0.26657626193880907
+Dieting,0.21394932429147795
+Feeling fat,0.14750062542053116
+Thin-ideal internalization,0.1009921142054361
+Body dissatisfaction,0.09271993491922448
+Compensatory behaviors,0.08490170009659596
+Binge eating,0.03975975246153265
+BMI,0.03642089195803868
+Healthy Weight (vs Control/BP),0.0290999762690374
+Psychosocial functioning,0.01817445073787072
